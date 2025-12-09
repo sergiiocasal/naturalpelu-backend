@@ -270,7 +270,6 @@ export const cancelarReservaCliente = async (req, res) => {
   try {
     const id_reserva = req.params.id;
     const id_cliente = req.usuario.id;
-
     const [rows] = await db.query(
       `SELECT r.*, 
               p.estado AS estado_pago, 
@@ -278,17 +277,20 @@ export const cancelarReservaCliente = async (req, res) => {
               p.id_transacion
        FROM reservas r
        LEFT JOIN pagos p ON r.id_pago = p.id
-       WHERE r.id = ? AND r.id_cliente = ?`,
-      [id_reserva, id_cliente]
+       WHERE r.id = ?`,
+      [id_reserva]
     );
 
     if (rows.length === 0) {
-      return res
-        .status(403)
-        .json({ error: "Non tes permiso para cancelar esta reserva" });
+      return res.status(404).json({ error: "A reserva non existe" });
     }
 
     const r = rows[0];
+
+    if (r.id_cliente !== id_cliente) {
+      return res.status(403).json({ error: "Non tes permiso para cancelar esta reserva" });
+    }
+
     let estado_pago_final = "reembolsado";
 
     if (!r.id_pago || !r.id_transacion) {
@@ -296,20 +298,19 @@ export const cancelarReservaCliente = async (req, res) => {
     } else if (r.estado_pago === "reembolsado") {
       estado_pago_final = "reembolsado";
     } else {
-        try {
-          await stripe.refunds.create({
-            payment_intent: r.id_transacion,
-          });
+      try {
+        await stripe.refunds.create({
+          payment_intent: r.id_transacion,
+        });
 
-          await db.query(
-            "UPDATE pagos SET estado='reembolsado', data_reembolso = NOW() WHERE id = ?",
-            [r.id_pago]
-          );
-
-        } catch (error) {
-          console.log("Error reembolsando:", error);
-          estado_pago_final = "error_reembolso";
-        }
+        await db.query(
+          "UPDATE pagos SET estado='reembolsado', data_reembolso = NOW() WHERE id = ?",
+          [r.id_pago]
+        );
+      } catch (error) {
+        console.log("Error reembolsando:", error);
+        estado_pago_final = "error_reembolso";
+      }
     }
 
     await db.query(
@@ -332,9 +333,17 @@ export const cancelarReservaCliente = async (req, res) => {
         "cliente",
       ]
     );
-    await db.query("DELETE FROM reservas WHERE id = ?", [id_reserva]);
 
-    res.json({
+    const [deleteResult] = await db.query(
+      "DELETE FROM reservas WHERE id = ?",
+      [id_reserva]
+    );
+
+    if (deleteResult.affectedRows === 0) {
+      console.warn("⚠️ [ATENCIÓN] No se pudo eliminar la reserva original en reservas.");
+    }
+
+    return res.json({
       mensaje:
         estado_pago_final === "reembolsado"
           ? "Reserva cancelada e reembolso realizado"
@@ -344,7 +353,7 @@ export const cancelarReservaCliente = async (req, res) => {
     });
   } catch (error) {
     console.log(error);
-    res.status(500).json({ error: "Erro ao cancelar a reserva" });
+    return res.status(500).json({ error: "Erro ao cancelar a reserva" });
   }
 };
 
