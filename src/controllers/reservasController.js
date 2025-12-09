@@ -386,15 +386,18 @@ export const obtenerHorasDisponibles = async (req, res) => {
 
     const generarSlots = (inicio, fin) => {
       let [h, m] = inicio.split(":").map(Number);
-      const [fh, fm] = fin.split(":").map(Number);
 
       const finDate = new Date(`${fecha}T${fin}:00`);
 
       while (true) {
-        const slot = new Date(`${fecha}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`);
+        const slot = new Date(
+          `${fecha}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`
+        );
         if (slot >= finDate) break;
 
-        horasPosibles.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+        horasPosibles.push(
+          `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
+        );
 
         m += 15;
         if (m >= 60) {
@@ -419,9 +422,12 @@ export const obtenerHorasDisponibles = async (req, res) => {
       const finSlot = new Date(inicioSlot.getTime() + duracion * 60000);
 
       for (const r of reservas) {
-        const inicioReserva = new Date(`${fecha}T${r.hora}`);
-        const finReserva = new Date(inicioReserva.getTime() + r.duracion * 60000);
+        const inicioReserva = new Date(`${fecha}T${r.hora}:00`); 
+        const finReserva = new Date(
+          inicioReserva.getTime() + r.duracion * 60000
+        );
 
+        // Si se solapan, horario non dispoñible
         if (inicioSlot < finReserva && finSlot > inicioReserva) {
           return true;
         }
@@ -437,6 +443,7 @@ export const obtenerHorasDisponibles = async (req, res) => {
     res.status(500).json({ error: "Erro ao obter horas dispoñibles" });
   }
 };
+
 
 /* obter reservas dun cliente */
 export const obtenerReservaClientePorId = async (req, res) => {

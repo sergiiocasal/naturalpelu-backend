@@ -88,14 +88,26 @@ export const obtenerReservaDesdeSession = async (req, res) => {
 
     const session = await stripe.checkout.sessions.retrieve(session_id);
 
+    if (!session) {
+      return res.status(404).json({ error: "Sesión non atopada" });
+    }
+
     const paymentIntentId = session.payment_intent;
 
+    if (!paymentIntentId) {
+      return res.status(202).json({
+        estado: "pendente",
+        mensaje: "O pago aínda non terminou"
+      });
+    }
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-
-    const id_reserva = paymentIntent.metadata.id_reserva;
+    const id_reserva = paymentIntent.metadata?.id_reserva;
 
     if (!id_reserva) {
-      return res.status(404).json({ error: "A reserva aínda non está lista" });
+      return res.status(202).json({
+        estado: "pendente",
+        mensaje: "A reserva aínda non está lista"
+      });
     }
 
     const [rows] = await db.query(
@@ -107,21 +119,25 @@ export const obtenerReservaDesdeSession = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: "Reserva non atopada" });
+      return res.status(202).json({
+        estado: "pendente",
+        mensaje: "A reserva está rexistrada pero aínda non accesible"
+      });
     }
 
     const reserva = rows[0];
 
-    res.json({
+    return res.json({
       id_reserva,
       servizo: reserva.servizo,
       fecha: reserva.fecha.toISOString().split("T")[0],
       hora: reserva.hora.slice(0, 5),
       codigo_reserva: reserva.codigo_reserva,
-      importe: reserva.importe_final,
+      importe: reserva.importe_final
     });
+
   } catch (error) {
-    console.log(error);
-    res.status(500).json({ error: "Erro ao obter a reserva" });
+    console.log("Erro obter reserva:", error);
+    return res.status(500).json({ error: "Erro ao obter a reserva" });
   }
 };
