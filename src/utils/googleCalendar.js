@@ -35,8 +35,14 @@ export const crearEventoGoogle = async ({
         timeZone: "Europe/Madrid",
       },
       attendees: [
-        { email: correoCliente },
-        { email: "a25sergiocg@iessanclemente.net" }, 
+        {
+          email: correoCliente,
+          responseStatus: "needsAction"
+        },
+        {
+          email: "a25sergiocg@iessanclemente.net",
+          organizer: true
+        }
       ],
     };
 
@@ -47,11 +53,13 @@ export const crearEventoGoogle = async ({
     });
 
     return res.data.id;
+
   } catch (error) {
     console.error("Error creando evento en Google Calendar:", error);
     return null;
   }
 };
+
 
 // eliminamos o evento de Google Calendar 
 export const eliminarEventoGoogle = async (eventId) => {
