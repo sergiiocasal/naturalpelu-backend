@@ -16,59 +16,94 @@ export const pagosWebhook = async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
+    console.error("Error validando webhook:", err.message);
     return res.status(400).send(`Webhook error: ${err.message}`);
   }
 
-  if (event.type === "checkout.session.completed") {
-    const session = event.data.object;
-    const md = session.metadata;
+  if (event.type !== "checkout.session.completed") {
+    return res.json({ received: true });
+  }
 
-    try {
+  const session = event.data.object;
+  const md = session.metadata || {};
+  const paymentIntentId = session.payment_intent;
+
+  if (!paymentIntentId) {
+    console.error("Webhook sen payment_intent");
+    return res.json({ received: true });
+  }
+
+  try {
+    const [reservasExistentes] = await db.query(
+      "SELECT id FROM reservas WHERE pago_intent = ?",
+      [paymentIntentId]
+    );
+
+    if (reservasExistentes.length > 0) {
+      console.log("Webhook repetido: reserva xa creada para este payment_intent");
+      return res.json({ received: true });
+    }
+
+    const precio = Number(md.precio || 0);
+    const duracion = Number(md.duracion || 0);
+
+    let id_pago;
+    const [pagosExistentes] = await db.query(
+      "SELECT id FROM pagos WHERE id_transacion = ?",
+      [paymentIntentId]
+    );
+
+    if (pagosExistentes.length > 0) {
+      id_pago = pagosExistentes[0].id;
+    } else {
       const [pagoResult] = await db.query(
         `INSERT INTO pagos (estado, importe, id_transacion, data_pago)
          VALUES ('pagado', ?, ?, NOW())`,
-        [md.precio, session.payment_intent]
+        [precio, paymentIntentId]
       );
+      id_pago = pagoResult.insertId;
+    }
 
-      const id_pago = pagoResult.insertId;
+    const codigo_reserva =
+      "NP-" + Math.random().toString(36).substring(2, 8).toUpperCase();
 
-      const codigo_reserva =
-        "NP-" + Math.random().toString(36).substring(2, 8).toUpperCase();
+    const [reservaResult] = await db.query(
+      `INSERT INTO reservas
+       (id_cliente, id_servizo, fecha, hora, codigo_reserva, estado, id_pago, importe_final, pago_intent)
+       VALUES (?, ?, ?, ?, ?, 'pagada', ?, ?, ?)`,
+      [
+        md.id_cliente,
+        md.id_servizo,
+        md.fecha,
+        md.hora,
+        codigo_reserva,
+        id_pago,
+        precio,
+        paymentIntentId,
+      ]
+    );
 
-      const [reservaResult] = await db.query(
-        `INSERT INTO reservas
-         (id_cliente, id_servizo, fecha, hora, codigo_reserva, estado, id_pago, importe_final)
-         VALUES (?, ?, ?, ?, ?, 'pagada', ?, ?)`,
-        [
-          md.id_cliente,
-          md.id_servizo,
-          md.fecha,
-          md.hora,
-          codigo_reserva,
-          id_pago,
-          md.precio
-        ]
-      );
+    const id_reserva = reservaResult.insertId;
 
-      const id_reserva = reservaResult.insertId;
+    await stripe.paymentIntents.update(paymentIntentId, {
+      metadata: {
+        ...(session.metadata || {}),
+        id_reserva,
+      },
+    });
 
-      await stripe.paymentIntents.update(session.payment_intent, {
-        metadata: { id_reserva },
-      });
+    if (md.fecha && md.hora && duracion > 0) {
+      const inicioStr = `${md.fecha}T${md.hora}:00`;
+      const inicioDate = new Date(inicioStr);
+      const finDate = new Date(inicioDate.getTime() + duracion * 60000);
+      const finStr = finDate.toISOString().slice(0, 19);
 
-      // calcular o inicio e o fin do evento
-      const inicio = `${md.fecha}T${md.hora}:00`;
-      const fin = new Date(
-        new Date(inicio).getTime() + md.duracion * 60000
-      ).toISOString();
-
-      // creamos o evento en Google Calendar
       const eventId = await crearEventoGoogle({
         resumen: `Reserva - ${md.nombre_servizo}`,
         descripcion: `Cliente: ${md.nombre_cliente}\nCódigo: ${codigo_reserva}`,
-        inicio,
-        fin,
-        correoCliente: session.customer_email
+        inicio: inicioStr,
+        fin: finStr,
+        correoCliente: session.customer_email,
       });
 
       if (eventId) {
@@ -77,26 +112,25 @@ export const pagosWebhook = async (req, res) => {
           [eventId, id_reserva]
         );
       }
-
-      // enviamos o correo
-      await enviarCorreoReserva({
-        destinatario: session.customer_email,
-        nombre_cliente: md.nombre_cliente,
-        codigo: codigo_reserva,
-        servicio: md.nombre_servizo,
-        fecha: md.fecha,
-        hora: md.hora,
-        duracion: md.duracion,
-        importe: md.precio
-      });
-
-    } catch (error) {
-      console.error("Error procesando webhook:", error);
     }
+
+    await enviarCorreoReserva({
+      destinatario: session.customer_email,
+      nombre_cliente: md.nombre_cliente,
+      codigo: codigo_reserva,
+      servicio: md.nombre_servizo,
+      fecha: md.fecha,
+      hora: md.hora,
+      duracion,
+      importe: precio,
+    });
+  } catch (error) {
+    console.error("Error procesando webhook:", error);
   }
 
   res.json({ received: true });
 };
+
 export const obtenerReservaDesdeSession = async (req, res) => {
   try {
     const session_id = req.params.id;
@@ -112,7 +146,7 @@ export const obtenerReservaDesdeSession = async (req, res) => {
     if (!paymentIntentId) {
       return res.status(202).json({
         estado: "pendente",
-        mensaje: "O pago aínda non terminou"
+        mensaje: "O pago aínda non terminou",
       });
     }
 
@@ -122,7 +156,7 @@ export const obtenerReservaDesdeSession = async (req, res) => {
     if (!id_reserva) {
       return res.status(202).json({
         estado: "pendente",
-        mensaje: "A reserva aínda non está lista"
+        mensaje: "A reserva aínda non está lista",
       });
     }
 
@@ -137,7 +171,7 @@ export const obtenerReservaDesdeSession = async (req, res) => {
     if (rows.length === 0) {
       return res.status(202).json({
         estado: "pendente",
-        mensaje: "A reserva está rexistrada pero aínda non accesible"
+        mensaje: "A reserva está rexistrada pero aínda non accesible",
       });
     }
 
@@ -146,13 +180,16 @@ export const obtenerReservaDesdeSession = async (req, res) => {
     return res.json({
       id_reserva,
       servizo: reserva.servizo,
-      fecha: reserva.fecha.toISOString().split("T")[0],
-      hora: reserva.hora.slice(0, 5),
+      fecha:
+        reserva.fecha instanceof Date
+          ? reserva.fecha.toISOString().split("T")[0]
+          : reserva.fecha,
+      hora: reserva.hora ? reserva.hora.slice(0, 5) : null,
       codigo_reserva: reserva.codigo_reserva,
-      importe: reserva.importe_final
+      importe: reserva.importe_final,
     });
-
   } catch (error) {
+    console.log("Erro ao obter a reserva dende session:", error);
     return res.status(500).json({ error: "Erro ao obter a reserva" });
   }
 };
