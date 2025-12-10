@@ -1,40 +1,36 @@
 import Stripe from "stripe";
 import db from "../db/connection.js";
+import { eliminarEventoGoogle } from "../utils/googleCalendar.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// formatear reserva para frontend
-const formatearReserva = (r) => {
-  return {
-    ...r,
-    fecha: r.fecha instanceof Date 
-    ? r.fecha.toLocaleDateString("sv-SE")
-    : r.fecha,
-    hora: r.hora ? r.hora.slice(0, 5) : null,
-  };
-};
+const formatearReserva = (r) => ({
+  ...r,
+  fecha:
+    r.fecha instanceof Date
+      ? r.fecha.toLocaleDateString("sv-SE")
+      : r.fecha,
+  hora: r.hora ? r.hora.slice(0, 5) : null,
+});
 
-/* crear checkout para unha reserva */
 export const crearCheckoutReserva = async (req, res) => {
   try {
     const { id_servizo, fecha, hora, precio_final, codigo_desconto } = req.body;
     const id_cliente = req.usuario.id;
 
-    if (!id_servizo || !fecha || !hora) {
+    if (!id_servizo || !fecha || !hora)
       return res.status(400).json({ error: "Faltan datos obrigatorios" });
-    }
 
-    // obtener servicio
-    const [serv] = await db.query("SELECT * FROM servizos WHERE id = ?", [id_servizo]);
+    const [serv] = await db.query("SELECT * FROM servizos WHERE id = ?", [
+      id_servizo,
+    ]);
 
-    if (serv.length === 0) {
+    if (serv.length === 0)
       return res.status(404).json({ error: "O servizo non existe" });
-    }
 
     const nombre_servizo = serv[0].nombre;
     const duracion = serv[0].duracion;
 
-    // obtener nombre del cliente
     const [userRows] = await db.query(
       "SELECT nombre, correo FROM usuarios WHERE id = ?",
       [id_cliente]
@@ -45,7 +41,6 @@ export const crearCheckoutReserva = async (req, res) => {
 
     const precio = Number(precio_final ?? serv[0].precio);
 
-    // crear sesión stripe
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
@@ -72,18 +67,16 @@ export const crearCheckoutReserva = async (req, res) => {
         duracion,
         nombre_servizo,
         nombre_cliente,
+        correo_cliente,
       },
     });
 
     res.json({ url: session.url });
-
   } catch (error) {
-    console.error("Error creando checkout:", error);
     res.status(500).json({ error: "Erro creando checkout" });
   }
 };
 
-/* obter todas as reservas (solo admin) */
 export const obtenerReservasCompletas = async (req, res) => {
   try {
     const id_cliente = req.usuario.id;
@@ -97,6 +90,7 @@ export const obtenerReservasCompletas = async (req, res) => {
         r.hora,
         r.estado,
         r.importe_final,
+        r.google_event_id,
         s.nombre AS servizo,
         u.correo AS cliente_correo,
         u.nombre AS cliente_nombre,
@@ -120,22 +114,12 @@ export const obtenerReservasCompletas = async (req, res) => {
 
     const [rows] = await db.query(query, params);
 
-    res.json(
-      rows.map((r) => ({
-        ...r,
-        fecha: r.fecha instanceof Date 
-        ? r.fecha.toLocaleDateString("sv-SE")
-        : r.fecha,
-        hora: r.hora?.slice(0, 5) || r.hora,
-      }))
-    );
+    res.json(rows.map(formatearReserva));
   } catch (error) {
-    console.log(error);
     res.status(500).json({ error: "Erro ao obter as reservas completas" });
   }
 };
 
-/* obter reservas canceladas (solo admin) */
 export const obtenerReservasCanceladas = async (req, res) => {
   try {
     const [rows] = await db.query(
@@ -159,81 +143,64 @@ export const obtenerReservasCanceladas = async (req, res) => {
       ORDER BY rc.fecha DESC, rc.hora DESC`
     );
 
-    const formatearFecha = (d) => {
-      if (!d) return "";
-      return new Date(d).toLocaleDateString("es-ES");
-    };
-
-    const formatearHora = (d) => {
-      if (!d) return "";
-      const date = new Date(d);
-      return date.toTimeString().slice(0, 5);
-    };
-
     const final = rows.map((r) => ({
       ...r,
-      fecha: r.fecha instanceof Date 
-      ? r.fecha.toLocaleDateString("sv-SE") 
-      : r.fecha,
-      hora: r.hora?.slice(0, 5) || r.hora,
-
-      fecha_cancelacion: formatearFecha(r.fecha_cancelacion),
-      hora_cancelacion: formatearHora(r.fecha_cancelacion),
+      fecha:
+        r.fecha instanceof Date
+          ? r.fecha.toLocaleDateString("sv-SE")
+          : r.fecha,
+      hora: r.hora?.slice(0, 5),
+      fecha_cancelacion: new Date(r.fecha_cancelacion).toLocaleDateString("es-ES"),
+      hora_cancelacion: new Date(r.fecha_cancelacion)
+        .toTimeString()
+        .slice(0, 5),
     }));
 
     res.json(final);
   } catch (error) {
-    console.log(error);
     res.status(500).json({ error: "Erro ao obter as reservas canceladas" });
   }
 };
 
-/* cancelar reserva como admin */
 export const cancelarReservaAdmin = async (req, res) => {
   try {
     const id_reserva = req.params.id;
 
     const [rows] = await db.query(
-      `SELECT r.*, 
-              p.estado AS estado_pago, 
-              p.importe, 
-              p.id_transacion
+      `SELECT r.*, p.estado AS estado_pago, p.importe, p.id_transacion 
        FROM reservas r
        LEFT JOIN pagos p ON r.id_pago = p.id
        WHERE r.id = ?`,
       [id_reserva]
     );
 
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res.status(404).json({ error: "A reserva non existe" });
-    }
 
     const r = rows[0];
+
+    if (r.google_event_id) {
+      await eliminarEventoGoogle(r.google_event_id);
+    }
+
     let estado_pago_final = "reembolsado";
 
     if (r.id_pago && r.id_transacion) {
       try {
-        await stripe.refunds.create({
-          payment_intent: r.id_transacion,
-        });
-
+        await stripe.refunds.create({ payment_intent: r.id_transacion });
         await db.query(
           "UPDATE pagos SET estado='reembolsado', data_reembolso = NOW() WHERE id = ?",
           [r.id_pago]
         );
       } catch (error) {
-        console.log("Error reembolsando:", error);
         estado_pago_final = "error_reembolso";
       }
-    } else {
-      estado_pago_final = "sen_pago";
-    }
+    } else estado_pago_final = "sen_pago";
 
     await db.query(
       `INSERT INTO reservas_canceladas 
         (id_reserva_original, id_cliente, id_servizo, fecha, hora, codigo_reserva,
-         id_pago, importe_final, estado_pago_final,
-         id_transaccion, cancelada_por)
+         id_pago, importe_final, estado_pago_final, id_transaccion, cancelada_por)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         r.id,
@@ -251,74 +218,58 @@ export const cancelarReservaAdmin = async (req, res) => {
     );
 
     await db.query("DELETE FROM reservas WHERE id = ?", [id_reserva]);
-    res.json({
-      mensaje:
-        estado_pago_final === "reembolsado"
-          ? "Reserva cancelada e reembolso realizado"
-          : estado_pago_final === "sen_pago"
-          ? "Reserva cancelada (non había pago asociado)"
-          : "Reserva cancelada, pero o reembolso fallou. Revisión necesaria.",
-    });
+
+    res.json({ mensaje: "Reserva cancelada" });
   } catch (error) {
-    console.log(error);
     res.status(500).json({ error: "Erro ao cancelar a reserva" });
   }
 };
 
-/* cancelar reserva como cliente */
 export const cancelarReservaCliente = async (req, res) => {
   try {
     const id_reserva = req.params.id;
     const id_cliente = req.usuario.id;
+
     const [rows] = await db.query(
-      `SELECT r.*, 
-              p.estado AS estado_pago, 
-              p.importe, 
-              p.id_transacion
+      `SELECT r.*, p.estado AS estado_pago, p.importe, p.id_transacion 
        FROM reservas r
        LEFT JOIN pagos p ON r.id_pago = p.id
        WHERE r.id = ?`,
       [id_reserva]
     );
 
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res.status(404).json({ error: "A reserva non existe" });
-    }
 
     const r = rows[0];
 
-    if (r.id_cliente !== id_cliente) {
+    if (r.id_cliente !== id_cliente)
       return res.status(403).json({ error: "Non tes permiso para cancelar esta reserva" });
+
+    if (r.google_event_id) {
+      await eliminarEventoGoogle(r.google_event_id);
     }
 
     let estado_pago_final = "reembolsado";
 
-    if (!r.id_pago || !r.id_transacion) {
-      estado_pago_final = "sen_pago";
-    } else if (r.estado_pago === "reembolsado") {
-      estado_pago_final = "reembolsado";
-    } else {
+    if (!r.id_pago || !r.id_transacion) estado_pago_final = "sen_pago";
+    else if (r.estado_pago !== "reembolsado") {
       try {
-        await stripe.refunds.create({
-          payment_intent: r.id_transacion,
-        });
-
+        await stripe.refunds.create({ payment_intent: r.id_transacion });
         await db.query(
           "UPDATE pagos SET estado='reembolsado', data_reembolso = NOW() WHERE id = ?",
           [r.id_pago]
         );
-      } catch (error) {
-        console.log("Error reembolsando:", error);
+      } catch {
         estado_pago_final = "error_reembolso";
       }
     }
 
     await db.query(
-      `INSERT INTO reservas_canceladas 
-        (id_reserva_original, id_cliente, id_servizo, fecha, hora, codigo_reserva,
-         id_pago, importe_final, estado_pago_final,
-         id_transaccion, cancelada_por)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO reservas_canceladas
+      (id_reserva_original, id_cliente, id_servizo, fecha, hora, codigo_reserva,
+       id_pago, importe_final, estado_pago_final, id_transaccion, cancelada_por)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         r.id,
         r.id_cliente,
@@ -334,74 +285,55 @@ export const cancelarReservaCliente = async (req, res) => {
       ]
     );
 
-    const [deleteResult] = await db.query(
-      "DELETE FROM reservas WHERE id = ?",
-      [id_reserva]
-    );
+    await db.query("DELETE FROM reservas WHERE id = ?", [id_reserva]);
 
-    if (deleteResult.affectedRows === 0) {
-      console.warn("⚠️ [ATENCIÓN] No se pudo eliminar la reserva original en reservas.");
-    }
-
-    return res.json({
-      mensaje:
-        estado_pago_final === "reembolsado"
-          ? "Reserva cancelada e reembolso realizado"
-          : estado_pago_final === "sen_pago"
-          ? "Reserva cancelada (non había pago asociado)"
-          : "Reserva cancelada, pero o reembolso fallou. Revisión necesaria.",
-    });
+    res.json({ mensaje: "Reserva cancelada" });
   } catch (error) {
-    console.log(error);
-    return res.status(500).json({ error: "Erro ao cancelar a reserva" });
+    res.status(500).json({ error: "Erro ao cancelar a reserva" });
   }
 };
 
-/* obter as horas dispoñibles para reservas */
 export const obtenerHorasDisponibles = async (req, res) => {
   try {
     const { fecha, id_servizo } = req.query;
 
-    if (!fecha || !id_servizo) {
+    if (!fecha || !id_servizo)
       return res.status(400).json({ error: "Faltan parámetros" });
-    }
 
     const [rowServ] = await db.query(
       "SELECT duracion FROM servizos WHERE id = ?",
       [id_servizo]
     );
 
-    if (rowServ.length === 0) {
+    if (rowServ.length === 0)
       return res.status(404).json({ error: "O servizo non existe" });
-    }
 
     const duracion = rowServ[0].duracion;
 
     const dia = new Date(fecha).getDay();
     let bloques = [];
 
-    if (dia >= 2 && dia <= 5) {
+    if (dia >= 2 && dia <= 5)
       bloques = [
         { inicio: "10:15", fin: "13:30" },
         { inicio: "16:15", fin: "19:30" },
       ];
-    } else if (dia === 6) {
-      bloques = [{ inicio: "09:00", fin: "17:00" }];
-    } else {
-      return res.json({ horas: [] });
-    }
+    else if (dia === 6) bloques = [{ inicio: "09:00", fin: "17:00" }];
+    else return res.json({ horas: [] });
 
     const horasPosibles = [];
 
     const generarSlots = (inicio, fin) => {
       let [h, m] = inicio.split(":").map(Number);
-
       const finDate = new Date(`${fecha}T${fin}:00`);
 
       while (true) {
         const slot = new Date(
-          `${fecha}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`
+          `${fecha}T${String(h).padStart(2, "0")}:${String(
+            m
+          ).padStart(2, "0")}:00`
         );
+
         if (slot >= finDate) break;
 
         horasPosibles.push(
@@ -431,15 +363,12 @@ export const obtenerHorasDisponibles = async (req, res) => {
       const finSlot = new Date(inicioSlot.getTime() + duracion * 60000);
 
       for (const r of reservas) {
-        const inicioReserva = new Date(`${fecha}T${r.hora}:00`); 
+        const inicioReserva = new Date(`${fecha}T${r.hora}:00`);
         const finReserva = new Date(
           inicioReserva.getTime() + r.duracion * 60000
         );
 
-        // Si se solapan, horario non dispoñible
-        if (inicioSlot < finReserva && finSlot > inicioReserva) {
-          return true;
-        }
+        if (inicioSlot < finReserva && finSlot > inicioReserva) return true;
       }
       return false;
     };
@@ -448,13 +377,10 @@ export const obtenerHorasDisponibles = async (req, res) => {
 
     res.json({ horas: horasLibres });
   } catch (error) {
-    console.log(error);
     res.status(500).json({ error: "Erro ao obter horas dispoñibles" });
   }
 };
 
-
-/* obter reservas dun cliente */
 export const obtenerReservaClientePorId = async (req, res) => {
   try {
     const id_cliente = req.usuario.id;
@@ -469,6 +395,7 @@ export const obtenerReservaClientePorId = async (req, res) => {
           r.estado AS estado_reserva,
           r.id_pago,
           r.id_servizo,
+          r.google_event_id,
           s.nombre AS servizo,
           s.duracion,
           s.precio,
@@ -482,18 +409,15 @@ export const obtenerReservaClientePorId = async (req, res) => {
       [id_reserva, id_cliente]
     );
 
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res.status(403).json({ error: "Non tes permiso para ver esta reserva" });
-    }
 
     res.json(formatearReserva(rows[0]));
   } catch (error) {
-    console.log(error);
-    res.status(500).json({ error: "Erro ao obter reserva" });
+    res.status(500).json({ error: "Erro ao obter a reserva" });
   }
 };
 
-/* actualizar unha reserva dun cliente */
 export const actualizarReservaCliente = async (req, res) => {
   try {
     const id_reserva = req.params.id;
@@ -505,9 +429,8 @@ export const actualizarReservaCliente = async (req, res) => {
       [id_reserva, id_cliente]
     );
 
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res.status(403).json({ error: "Non tes permiso para editar esta reserva" });
-    }
 
     await db.query(
       "UPDATE reservas SET id_servizo=?, fecha=?, hora=? WHERE id=?",
@@ -515,8 +438,7 @@ export const actualizarReservaCliente = async (req, res) => {
     );
 
     res.json({ mensaje: "Reserva actualizada correctamente" });
-  } catch (err) {
-    console.log(err);
+  } catch (error) {
     res.status(500).json({ error: "Erro ao actualizar reserva" });
   }
 };
