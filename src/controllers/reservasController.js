@@ -329,7 +329,7 @@ export const obtenerHorasDisponibles = async (req, res) => {
       return res.status(404).json({ error: "O servizo non existe" });
     }
 
-    const duracion = rowServ[0].duracion;
+    const duracionServicioActual = rowServ[0].duracion; 
 
     const dia = new Date(fecha).getDay();
     let bloques = [];
@@ -337,10 +337,10 @@ export const obtenerHorasDisponibles = async (req, res) => {
     if (dia >= 2 && dia <= 5) {
       bloques = [
         { inicio: "10:15", fin: "13:30" },
-        { inicio: "16:00", fin: "19:30" },
+        { inicio: "16:00", fin: "19:30" }
       ];
     } else if (dia === 6) {
-      bloques = [{ inicio: "09:00", fin: "17:00" }];
+      bloques = [{ inicio: "09:00", fin: "16:30" }];
     } else {
       return res.json({ horas: [] });
     }
@@ -349,18 +349,17 @@ export const obtenerHorasDisponibles = async (req, res) => {
 
     const generarSlots = (inicio, fin) => {
       let [h, m] = inicio.split(":").map(Number);
-      const finDate = new Date(`${fecha}T${fin}:00`);
+      const [finH, finM] = fin.split(":").map(Number);
+
+      const finDate = new Date(`${fecha}T${finH.toString().padStart(2, "0")}:${finM.toString().padStart(2, "0")}:00`);
 
       while (true) {
-        const slot = new Date(
-          `${fecha}T${String(h).padStart(2, "0")}:${String(
-            m
-          ).padStart(2, "0")}:00`
-        );
+        const slot = new Date(`${fecha}T${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:00`);
+
         if (slot >= finDate) break;
 
         horasPosibles.push(
-          `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
+          `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`
         );
 
         m += 15;
@@ -371,7 +370,7 @@ export const obtenerHorasDisponibles = async (req, res) => {
       }
     };
 
-    for (const b of bloques) generarSlots(b.inicio, b.fin);
+    bloques.forEach(b => generarSlots(b.inicio, b.fin));
 
     const [reservas] = await db.query(
       `SELECT r.hora, s.duracion
@@ -383,26 +382,28 @@ export const obtenerHorasDisponibles = async (req, res) => {
 
     const estaOcupada = (horaSlot) => {
       const inicioSlot = new Date(`${fecha}T${horaSlot}:00`);
-      const finSlot = new Date(inicioSlot.getTime() + duracion * 60000);
+      const finSlot = new Date(inicioSlot.getTime() + duracionServicioActual * 60000);
 
       for (const r of reservas) {
-        const inicioReserva = new Date(`${fecha}T${r.hora}:00`);
-        const finReserva = new Date(
-          inicioReserva.getTime() + r.duracion * 60000
-        );
-
+        const horaReserva = r.hora.slice(0, 5); 
+        const inicioReserva = new Date(`${fecha}T${horaReserva}:00`);
+        const finReserva = new Date(inicioReserva.getTime() + r.duracion * 60000);
         if (inicioSlot < finReserva && finSlot > inicioReserva) {
+          if (inicioSlot.getTime() === finReserva.getTime()) continue;
+
           return true;
         }
       }
+
       return false;
     };
 
-    const horasLibres = horasPosibles.filter((h) => !estaOcupada(h));
+    const horasLibres = horasPosibles.filter(h => !estaOcupada(h));
 
     res.json({ horas: horasLibres });
+
   } catch (error) {
-    console.log("Erro horas dispoñibles:", error);
+    console.log(error);
     res.status(500).json({ error: "Erro ao obter horas dispoñibles" });
   }
 };
