@@ -1,10 +1,10 @@
 import Stripe from "stripe";
 import db from "../db/connection.js";
 import { enviarCorreoReserva } from "../utils/email.js";
+import { crearEventoGoogle } from "../utils/googleCalendar.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// creamos a reserva real
 export const pagosWebhook = async (req, res) => {
   const sig = req.headers["stripe-signature"];
 
@@ -16,7 +16,6 @@ export const pagosWebhook = async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.error("Error validando webhook:", err.message);
     return res.status(400).send(`Webhook error: ${err.message}`);
   }
 
@@ -25,7 +24,6 @@ export const pagosWebhook = async (req, res) => {
     const md = session.metadata;
 
     try {
-      // crear pago
       const [pagoResult] = await db.query(
         `INSERT INTO pagos (estado, importe, id_transacion, data_pago)
          VALUES ('pagado', ?, ?, NOW())`,
@@ -34,7 +32,6 @@ export const pagosWebhook = async (req, res) => {
 
       const id_pago = pagoResult.insertId;
 
-      // crear reserva
       const codigo_reserva =
         "NP-" + Math.random().toString(36).substring(2, 8).toUpperCase();
 
@@ -55,12 +52,33 @@ export const pagosWebhook = async (req, res) => {
 
       const id_reserva = reservaResult.insertId;
 
-      // vincular a Stripe
       await stripe.paymentIntents.update(session.payment_intent, {
         metadata: { id_reserva },
       });
 
-      // enviar email
+      // calcular o inicio e o fin do evento
+      const inicio = `${md.fecha}T${md.hora}:00`;
+      const fin = new Date(
+        new Date(inicio).getTime() + md.duracion * 60000
+      ).toISOString();
+
+      // creamos o evento en Google Calendar
+      const eventId = await crearEventoGoogle({
+        resumen: `Reserva - ${md.nombre_servizo}`,
+        descripcion: `Cliente: ${md.nombre_cliente}\nCódigo: ${codigo_reserva}`,
+        inicio,
+        fin,
+        correoCliente: session.customer_email
+      });
+
+      if (eventId) {
+        await db.query(
+          "UPDATE reservas SET google_event_id = ? WHERE id = ?",
+          [eventId, id_reserva]
+        );
+      }
+
+      // enviamos o correo
       await enviarCorreoReserva({
         destinatario: session.customer_email,
         nombre_cliente: md.nombre_cliente,
@@ -79,9 +97,6 @@ export const pagosWebhook = async (req, res) => {
 
   res.json({ received: true });
 };
-
-
-// obtemos a reserva dende a session_id
 export const obtenerReservaDesdeSession = async (req, res) => {
   try {
     const session_id = req.params.id;
@@ -100,6 +115,7 @@ export const obtenerReservaDesdeSession = async (req, res) => {
         mensaje: "O pago aínda non terminou"
       });
     }
+
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
     const id_reserva = paymentIntent.metadata?.id_reserva;
 
@@ -137,7 +153,6 @@ export const obtenerReservaDesdeSession = async (req, res) => {
     });
 
   } catch (error) {
-    console.log("Erro obter reserva:", error);
     return res.status(500).json({ error: "Erro ao obter a reserva" });
   }
 };
