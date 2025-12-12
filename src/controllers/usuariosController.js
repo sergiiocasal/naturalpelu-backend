@@ -102,7 +102,7 @@ export const solicitarRecuperacionPassword = async (req, res) => {
     await enviarCorreoResetPasswordGoogle({
       destinatario: correo,
       nombre: usuario.nombre,
-      enlace: link,
+      resetUrl: link,
     });
 
     res.json({ mensaje: "Correo de recuperación enviado" });
