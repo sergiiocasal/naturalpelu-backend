@@ -1,6 +1,6 @@
 import Stripe from "stripe";
 import db from "../db/connection.js";
-import { enviarCorreoReserva } from "../utils/email.js";
+import { enviarCorreoReservaGoogle } from "../utils/googleEmail.js";
 import { crearEventoGoogle } from "../utils/googleCalendar.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
@@ -114,15 +114,15 @@ export const pagosWebhook = async (req, res) => {
       }
     }
 
-    await enviarCorreoReserva({
+    await enviarCorreoReservaGoogle({
       destinatario: session.customer_email,
       nombre_cliente: md.nombre_cliente,
       codigo: codigo_reserva,
       servicio: md.nombre_servizo,
       fecha: md.fecha,
       hora: md.hora,
-      duracion,
-      importe: precio,
+      duracion: md.duracion,
+      importe: md.precio
     });
   } catch (error) {
     console.error("Error procesando webhook:", error);
