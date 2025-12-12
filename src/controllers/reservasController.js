@@ -104,25 +104,27 @@ export const obtenerReservasCompletas = async (req, res) => {
       JOIN servizos s ON r.id_servizo = s.id
       JOIN usuarios u ON r.id_cliente = u.id
       LEFT JOIN pagos p ON r.id_pago = p.id
+      WHERE TIMESTAMP(r.fecha, r.hora) >= NOW()
     `;
 
     const params = [];
 
     if (rol !== 1) {
-      query += ` WHERE r.id_cliente = ? `;
+      query += ` AND r.id_cliente = ?`;
       params.push(id_cliente);
     }
 
-    query += ` ORDER BY r.fecha, r.hora `;
+    query += ` ORDER BY r.fecha, r.hora`;
 
     const [rows] = await db.query(query, params);
 
     res.json(rows.map(formatearReserva));
   } catch (error) {
-    console.log("Erro ao obter reservas completas:", error);
-    res.status(500).json({ error: "Erro ao obter as reservas completas" });
+    console.log("Erro ao obter reservas futuras:", error);
+    res.status(500).json({ error: "Erro ao obter as reservas" });
   }
 };
+
 
 export const obtenerReservasCanceladas = async (req, res) => {
   try {
@@ -180,6 +182,15 @@ export const cancelarReservaAdmin = async (req, res) => {
        WHERE r.id = ?`,
       [id_reserva]
     );
+
+    const fechaHoraReserva = new Date(`${r.fecha.toISOString().split("T")[0]}T${r.hora}`);
+
+    if (fechaHoraReserva < new Date()) {
+      return res.status(400).json({
+        error: "No se puede cancelar una reserva ya realizada"
+      });
+    }
+
 
     if (rows.length === 0) {
       return res.status(404).json({ error: "A reserva non existe" });
@@ -249,6 +260,15 @@ export const cancelarReservaCliente = async (req, res) => {
        WHERE r.id = ?`,
       [id_reserva]
     );
+
+    const fechaHoraReserva = new Date(`${r.fecha.toISOString().split("T")[0]}T${r.hora}`);
+
+    if (fechaHoraReserva < new Date()) {
+      return res.status(400).json({
+        error: "No se puede cancelar una reserva ya realizada"
+      });
+    }
+
 
     if (rows.length === 0) {
       return res.status(404).json({ error: "A reserva non existe" });
