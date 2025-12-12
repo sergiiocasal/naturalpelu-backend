@@ -11,6 +11,9 @@ import reservasRoutes from "./routes/reservasRoutes.js"
 import servizosRoutes from "./routes/servizosRoutes.js"
 import descontosRoutes from "./routes/descontosRoutes.js"
 import pagosRoutes from "./routes/pagosRoutes.js"
+import estadisticasRoutes from "./routes/estadisticasRoutes.js";
+
+
 
 const app = express()
 
@@ -27,6 +30,7 @@ app.use("/api/reservas", reservasRoutes)
 app.use("/api/servizos", servizosRoutes)
 app.use("/api/descontos", descontosRoutes)
 app.use("/api/pagos", pagosRoutes)
+app.use("/api/estadisticas", estadisticasRoutes);
 
 // ruta / para probas
 app.get("/", (req, res) => {
@@ -34,7 +38,6 @@ app.get("/", (req, res) => {
 })
 
 
-// rutas reais
 app.use("/api/usuarios", usuariosRoutes)
 app.get("/api/protegida", auth, (req, res) => {
   res.json({ mensaje: "Acceso autorizado", usuario: req.usuario })
