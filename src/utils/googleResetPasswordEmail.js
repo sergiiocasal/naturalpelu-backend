@@ -15,7 +15,7 @@ function crearMensajeRaw({ to, subject, html }) {
     .replace(/\//g, "_");
 }
 
-export const enviarCorreoResetPassword = async ({
+export const enviarCorreoResetPasswordGoogle = async ({
   destinatario,
   nombre,
   resetUrl,
