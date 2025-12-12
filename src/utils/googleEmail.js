@@ -3,7 +3,7 @@ import { gmail } from "./gmailClient.js";
 function crearMensajeRaw({ to, subject, html, text }) {
   const mensaje = [
     `To: ${to}`,
-    `Subject: ${subject}`,
+    `Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`,
     "Content-Type: text/html; charset=utf-8",
     "",
     html || text,
@@ -14,6 +14,7 @@ function crearMensajeRaw({ to, subject, html, text }) {
     .replace(/\+/g, "-")
     .replace(/\//g, "_");
 }
+
 
 export const enviarCorreoReservaGoogle = async ({
   destinatario,
